@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,34 +25,52 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
+      - name: Get npm cache directory
+        id: npm-cache
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore npm downloads
+        id: cache-npm
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.npm-cache.outputs.dir }}
+          key: ${{ runner.os }}-npm-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
       - name: Install dependencies
         run: |
           install_start=$(date +%s)
           npm ci
           echo "INSTALL_DURATION=$(( $(date +%s) - install_start )) seconds" >> "$GITHUB_ENV"
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Run the built application
-        run: npm start
+      - name: Save npm downloads
+        if: steps.cache-npm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.npm-cache.outputs.dir }}
+          key: ${{ steps.cache-npm.outputs.cache-primary-key }}
 
       - name: Write timing summary
         if: always()
         working-directory: .
+        env:
+          CACHE_STATUS: ${{ steps.cache-npm.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}
         run: |
           total_duration=$(( $(date +%s) - JOB_START ))
           {
             echo "| Job | Cache | Install duration | Total duration |"
             echo "| --- | --- | --- | --- |"
-            echo "| build | Not enabled | ${INSTALL_DURATION:-Not completed} | $total_duration seconds |"
+            echo "| prepare | $CACHE_STATUS | ${INSTALL_DURATION:-Not completed} | $total_duration seconds |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
+    # After copying these files into .github/workflows/, use this local path.
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      node-version: ${{ format('{0}', matrix.node-version) }}
